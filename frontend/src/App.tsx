@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { getDashboard, scanNetwork, type DashboardSnapshot } from './monitoringApi'
 import './App.css'
 
 type DeviceStatus = 'online' | 'warning' | 'offline'
@@ -19,6 +20,25 @@ const zones = [
   { name: 'Entry', active: 0, quality: 'Offline', signal: null, className: 'entry' },
 ]
 
+function relativeTime(value: string) {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000))
+  if (seconds < 60) return 'Now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`
+  return `${Math.floor(seconds / 3600)} hr ago`
+}
+
+function toDevices(snapshot: DashboardSnapshot): Device[] {
+  return snapshot.devices.map((device) => ({
+    id: device.id,
+    name: device.name,
+    mac: device.mac,
+    zone: device.zone,
+    signal: device.rssiDbm ?? -85,
+    lastSeen: relativeTime(device.lastSeenAt),
+    status: device.status,
+  }))
+}
+
 function signalLabel(signal: number) {
   if (signal >= -55) return 'Excellent'
   if (signal >= -65) return 'Good'
@@ -31,17 +51,31 @@ function App() {
   const [isScanning, setIsScanning] = useState(false)
   const [filter, setFilter] = useState<'all' | DeviceStatus>('all')
   const [lastScan, setLastScan] = useState('Just now')
+  const [source, setSource] = useState('Demo telemetry')
   const visibleDevices = useMemo(() => devices.filter((device) => filter === 'all' || device.status === filter), [devices, filter])
   const onlineCount = devices.filter((device) => device.status === 'online').length
-  const averageSignal = Math.round(devices.filter((device) => device.status !== 'offline').reduce((total, device) => total + device.signal, 0) / (devices.length - 1))
+  const activeDevices = devices.filter((device) => device.status !== 'offline')
+  const averageSignal = activeDevices.length ? Math.round(activeDevices.reduce((total, device) => total + device.signal, 0) / activeDevices.length) : 0
+
+  useEffect(() => {
+    void getDashboard().then((snapshot) => {
+      if (snapshot.devices.length) setDevices(toDevices(snapshot))
+      if (snapshot.generatedAt) setLastScan(relativeTime(snapshot.generatedAt))
+      setSource(snapshot.source === 'neighbour-cache' ? 'Local network scan' : snapshot.source)
+    }).catch(() => undefined)
+  }, [])
 
   const runScan = () => {
     setIsScanning(true)
-    window.setTimeout(() => {
+    void scanNetwork().then((snapshot) => {
+      setDevices(toDevices(snapshot))
+      setLastScan(snapshot.generatedAt ? relativeTime(snapshot.generatedAt) : 'Just now')
+      setSource(snapshot.source === 'neighbour-cache' ? 'Local network scan' : snapshot.source)
+    }).catch(() => {
       setDevices((currentDevices) => currentDevices.map((device) => device.status === 'offline' ? device : { ...device, signal: Math.max(-78, Math.min(-39, device.signal + Math.floor(Math.random() * 9) - 4)), lastSeen: 'Now' }))
       setLastScan('Just now')
-      setIsScanning(false)
-    }, 900)
+      setSource('Demo telemetry')
+    }).finally(() => setIsScanning(false))
   }
 
   return (
@@ -53,7 +87,7 @@ function App() {
       </header>
       <section className="page-heading">
         <div><p className="eyebrow">LIVE OVERVIEW</p><h1>Indoor network health</h1><p className="subhead">Find connected devices, weak coverage and unexpected visitors at a glance.</p></div>
-        <p className="updated">Last scan: {lastScan} <span aria-hidden="true">·</span> Demo telemetry</p>
+        <p className="updated">Last scan: {lastScan} <span aria-hidden="true">·</span> {source}</p>
       </section>
       <section className="metrics" aria-label="Network summary">
         <article className="metric-card"><span className="metric-icon blue">⌁</span><div><p>Connected devices</p><strong>{onlineCount}<small> / {devices.length}</small></strong></div><span className="metric-change">+1 today</span></article>
